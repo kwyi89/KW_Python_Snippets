@@ -1,4 +1,3 @@
-# Harvard-CS109-Data-Science
+# Python Snippets Created By KW
 
-All the contents uploaded here are from taking CS 109 at Harvard independently.
-http://cm.dce.harvard.edu/2014/01/14328/publicationListing.shtml
+All the Python Snippets in this repo were created by KW solely for the purpose of studying Python.
