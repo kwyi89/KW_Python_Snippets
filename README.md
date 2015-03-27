@@ -4,5 +4,5 @@ All the Python Snippets in this repo were created by KW solely for the purpose o
 IPython was first used to write and execute these Python codes and later converted to .py files to be uploaded here.
 This is why you see unnecessary "In [ ]" here and there.
 
-Some files contain more than one snippets. The filename should indicate so by stating more than one name.
+Some files contain more than one snippet. The filename should indicate so by stating more than one name.
 Otherwise, there must be some comments written within the file to indicate the starting point of a new Python snippet.
