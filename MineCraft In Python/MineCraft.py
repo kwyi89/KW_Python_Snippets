@@ -293,6 +293,265 @@ class Model(object):
             self._show_block(position, texture)
         else:
             self._enqueue(self._show_block, position, texture)
+            
+    def _show_block(self, position, texture):
+        """ Private implementation of the 'show_block()' method.
+        
+        Parameters
+        ----------
+        position : tuple of len 3
+            The (x, y, z) position of the block to show.
+        texture : list of len 3
+            The coordinates of the texture sqaures. Use 'tex_coords()' to generate.
+        
+        """
+        x, y, z = position
+        vertex_data = cub_vertices(x, y, z, 0.5)
+        texture_data = list(texture)
+        # create vertex list
+        # FIXME Maybe 'add_indexed()' should be used instead
+        self._shown[position] = self.batch.add(24, GL_QUADS, self.group,
+                                               ('v3f/static', vertex_data),
+                                               ('t2f/static', texture_data))
+        
+    def hide_block(self, position, immediate = True):
+        """ Hide the block at the given 'position'. Hiding does not remove the block from the world.
+        
+        Parameters
+        ----------
+        position : tuple of len 3
+            The (x, y, z) position of the block to hide.
+        immediate : bool
+            Whether or not to immediately remove the block from the canvas.
+        
+        """
+        self.shown.pop(position)
+        if immediate:
+            self._hide_block(position)
+        else:
+            self.enqueue(self._hide_block, position)
+            
+    def _hide_block(self, position):
+        """ Private implementation of the 'hide_block()' method.
+        
+        """
+        for position in self.sectors.get(sector, []):
+            if position not in self.shown and self.exposed(position):
+                self.show_block(position, False)
+                
+    def hide_sector(self, sector):
+        """ Ensure all blocks in the given sector that should be hidden are removed from the canvas.
+        
+        """
+        for position in self.sectors.get(sector, []):
+            if position in self.shown:
+                self.hide_block(position, False)
+    
+    def change_sectors(self, before, after):
+        """ Move from sector 'before' to sector 'after'. A sector is a contiguous x, y sub-region
+        of world. Sectors are used to speed up world rendering.
+        
+        """
+        before_set = set()
+        after_set = set()
+        pad = 4
+        for dx in xrange(-pad, pad + 1):
+            for dy in [0]: # xrange(-pad, pad + 1):
+                for dz in xrange(-pad, pad + 1):
+                    if dx ** 2 + dy ** 2 + dz ** 2 > (pad + 1) ** 2:
+                        continue
+                    if before:
+                        x, y, z = before
+                        before_set.add((x + dx, y + dy, z + dz))
+                    if after:
+                        x, y, z = after
+                        after_set.add((x + dx, y + dy, z + dz))
+        show = after_set - before_set
+        hide = before_set - after_set
+        for sector in show:
+            self.show_sector(sector)
+        for sector in hide:
+            self.hide_sector(sector)
+
+    def _enqueue(self, func, *args):
+        """ Add 'func' to the internal queue.
+        
+        """
+        self.queue.append((func, args))
+        
+    def _dequeue(self):
+        """ Pop the top function from the internal queue and call it.
+        
+        """
+        func, args = self.queue.popleft()
+        func(*args)
+        
+    def process_queue(self):
+        """ Process the entire queue while taking periodic breaks. This allows
+        the game loop to run smoothly. The queue contains calls to
+        _show_block() and _hide_block() so this method should be claled if
+        add_block() or remove_block() was called with immediate=False
+        
+        """
+        start = time.clock()
+        while self.queue and time.clock() - start < 1.0 / TICKS_PER_SEC:
+            self._dequeue()
+            
+    def process_entire_queue(self):
+        """ Process the entire queue with no breaks.
+        
+        """
+        while self.queue:
+            self._dequeue()
+            
+    
+class Window(pyglet.window.Window):
+    
+    def __init__(self, *args, **kwargs):
+        super(Window, self).__init__(*args, **kwargs)
+        
+        # Whether or not the window exclusively captures the mouse.
+        self.exclusive = False
+        
+        # When flying gravity has no effect and speed is increased.
+        self.flying = False
+        
+        # Strafing is moving lateral to the direction you are facing,
+        # e.g. moving to the left or right while continuing to face forward.
+        #
+        # First element is -1 when moving forward, 1 when moving back, and 0 otherwise.
+        # The second element is -1 when moving left, 1 when moving right, and 0 otherwise.
+        self.strafe = [0, 0]
+        
+        # Current (x, y, z) position in the world, specified with floats. Note
+        # that, perhaps unlike in math class, the y-axis is the vertical axis.
+        self.position = (0, 0, 0)
+        
+        # First element is rotation of the player in the x-z plane (ground plane)
+        # measured from the z-axis down. The second is the rotation
+        # angle from the ground plane up. Rotation is in degrees.
+        #
+        # The vertical plane rotation ranges from -90 (looking straight down) to
+        # 90 (looking straight up). The horizontal rotation range is unbounded.
+        self.rotation = (0, 0)
+        
+        # Which sector the player is currently in.
+        self.sector = None
+        
+        # The crosshairs at the center of the screen.
+        self.reticle = None
+        
+        # Velocity in the y (upward) direction.
+        self.dy = 0
+        
+        # A list of blocks the player can place. Hit num keys to cycle.
+        self.inventory = [BRICK, GRASS, SAND]
+        
+        # The current block the user can place. Hit num keys to cycle.
+        self.block = self.inventory[0]
+        
+        # Convenience list of num keys.
+        self.num_keys = [
+            key._1, key._2, key._3, key._4, key._5,
+            key._6, key._7, key._8, key._9, key._0]
+        
+        # Instance of the model that handles the world.
+        self.model = Model()
+        
+        # The label that is displayed in the top left of the canvas.
+        self.label = pyglet.text.Label('', font_name='Arial', font_size=18,
+                                       x=10, y=self.height - 10, anchor_x='left', anchor_y='top',
+                                       color=(0, 0, 0, 255))
+        
+        # This call schedules the 'update()' method to be called
+        # TICKS_PER_SEC. This is the main game event loop
+        pyglet.clock.schedule_interval(self.update, 1.0 ? TICKS_PER_SEC)
+        
+    def set_exclusive_mouse(self, exclusive):
+        """ If 'exclusive' is True, the game will capture the mouse, if False
+        the game will ignore the mouse.
+        
+        """
+        super(Window, self).set_exclusive_mouse(exclusive)
+        self.exclusive = exclusive
+        
+    def get_sight_vector(self):
+        """ Returns the current line of sight vector indicating the direction
+        the player is looking.
+        
+        """
+        x, y = self.rotation
+        # y ranges from -90 to 90, or -pi/2 to pi/2, so m ranges from 0 to 1 and
+        # is 1 when looking ahead parallel to the ground and 0 when looking
+        # straight up or down
+        m = math.cos(math.radians(y))
+        # dy ranges from -1 to 1 and is -1 when looking straight down and 1 when
+        # looking straight up.
+        dy = math.sin(math.radians(y))
+        dx = math.cos(math.radians(x - 90)) * m
+        dz = math.sin(math.radians(x - 90)) * m
+        return (dx, dy, dz)
+    
+    def get_motion_vector(self):
+        """ Reurns the current motion vector indicating the velocity of the player.
+        
+        Returns
+        -------
+        vector : tuple of len 3
+            Tuple containing the velocity in x, y, and z respectively.
+        
+        """
+        if any(self.strafe):
+            x, y = self.rotation
+            strafe = math.degrees(math.atan2(*self.strafe))
+            y_angle = math.radians(y)
+            x_angle = math.radians(x + strafe)
+            if self.flying:
+                m = math.cos(y_angle)
+                dy = math.sin(y_angle)
+                if self.strafe[1]:
+                    # Moving left or right.
+                    dy = 0.0
+                    m = 1
+                if self.strafe[0] > 0:
+                    # Moving backwards.
+                    dy *= -1
+                # When you are flying up or down, you have less left and right motion.
+                dx = math.cos(x_angle) * m
+                dz = math.sin(x_angle) * m
+            else:
+                dy = 0.0
+                dx = math.cos(x_angle)
+                dz = math.sin(x_angle)
+            
+        else:
+            dy = 0.0
+            dx = 0.0
+            dz = 0.0
+        return (dx, dy, dz)
+    
+    def update(self, dt):
+        """ This method is scheduled to be called repeatedly by the pyglet
+        clock.
+        
+        Parameter
+        ---------
+        dt : float
+            The change in time since the last call.
+            
+        """
+        self.model.process_queue()
+        sector = sectorize(self.position)
+        if sector != self.sector:
+            self.model.change_sectors(self.sector, sector)
+            if self.sector is None:
+                self.model.process_entire_queue()
+            self.sector = sector
+        m = 8
+        dt = min(dt, 0.2)
+        for _ in xrange(m):
+            self._update(dt / m)
+            
 
 
 # In[ ]:
