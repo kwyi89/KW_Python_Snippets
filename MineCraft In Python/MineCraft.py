@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[3]:
+# In[1]:
 
 import math
 import random
@@ -465,7 +465,7 @@ class Window(pyglet.window.Window):
         
         # This call schedules the 'update()' method to be called
         # TICKS_PER_SEC. This is the main game event loop
-        pyglet.clock.schedule_interval(self.update, 1.0 ? TICKS_PER_SEC)
+        pyglet.clock.schedule_interval(self.update, 1.0 / TICKS_PER_SEC)
         
     def set_exclusive_mouse(self, exclusive):
         """ If 'exclusive' is True, the game will capture the mouse, if False
@@ -552,6 +552,287 @@ class Window(pyglet.window.Window):
         for _ in xrange(m):
             self._update(dt / m)
             
+    def _update(self, dt):
+        """ Private implementation of the 'update()' method. This is where most
+        of the motion logic lives, along with gravity and collision detection.
+        
+        Parameters
+        ----------
+        dt : float
+            The change in time since the last call.
+            
+        """
+        # walking
+        speed = FLYING_SPEED if self.flying else WALKING_SPEED
+        d = dt * speed # distance covered this tick.
+        dx, dy, dz = self.get_motion_vector()
+        # New position in space, before accounting for gravity.
+        dx, dy, dz = dx * d, dy * d, dz * d
+        # gravity
+        if not self.flying:
+            # Update your vertical speed: if you are falling, speed up until you
+            # hit erminal velocity; if you are jumping, slow down until you 
+            # start falling.
+            self.dy -= dt * GRAVITY
+            self.dy = max(self.dy, -TERMINAL_VELOCITY)
+            dy += self.dy * dt
+        # collisions
+        x, y, z = self.position
+        x, y, z = self.collide((x + dx, y + dy, z + dz), PLAYER_HEIGHT)
+        self.position = (x, y, z)
+        
+    def collide(self, position, height):
+        """ Checks to see if the player at the given 'position' and 'height'
+        is collding with any blocks in the world.
+        
+        Parameters
+        ----------
+        position : tuple of len 3
+            The (x, y, z) position to check for collisions at.
+        height : int or float
+            The height of the player
+            
+        Returns
+        --------
+        position : tuple of len 3
+            The new position of the player taking into account collisions.
+            
+        """
+        # How much overlap with a dimension of a surrounding block you need to
+        # have to count as a collision. If 0, touching terrain at all counts as 
+        # a collision. If .49, you sink into the ground, as if walking through
+        # tall grass. If >= .5, you'll fall through the ground.
+        pad = 0.25
+        p = list(position)
+        np = normalize(position)
+        for face in FACES: # check all surrounding blocks
+            for i in xrange(3):
+                if not face[i]:
+                    continue
+                # How much overlap you have with this dimension.
+                d = (p[i] - np[i]) * face[i]
+                if d < pad:
+                    continue
+                for dy in xrange(height): # check each height
+                    op = list(np)
+                    op[1] -= dy
+                    op[i] += face[i]
+                    if tuple(op) not in self.model.world:
+                        continue
+                    p[i] -= (d - pad) * face[i]
+                    if face == (0, -1, 0) or face == (0, 1, 0):
+                        # You are colliding with the ground or ceiling, so stop
+                        # falling / rising
+                        self.dy = 0
+                    break
+        return tuple(p)
+    
+    def on_mouse_press(self, x, y, button, modifiers):
+        """ Called when a mouse button is pressed. See pyglet docs for button and modifier mappings.
+        
+        Parameters
+        ----------
+        x, y : int
+            The coordinates of the mouse click. Always center of the screen if
+            the mouse is captured.
+        dx, dy : float
+            The movement of the mouse.
+        
+        """
+        if self.exclusive:
+            m = 0.15
+            x, y = self.rotation
+            x, y = x + dx * m, y + dy * m
+            y = max(-90, min(90, y))
+            self.rotation = (x, y)
+            
+    def on_key_press(self, symbol, modifiers):
+        """ Called when the player presses a key. See pyglet docs for key mappings.
+        
+        Parameters
+        ----------
+        symbol : int
+            Number representing the key that was pressed.
+        modifiers : int
+            Number representing any modifying keys that were pressed.
+            
+        """
+        if symbol == key.W:
+            self.strafe[0] -= 1
+        elif symbol == key.S:
+            self.strafe[0] += 1
+        elif symbol == key.A:
+            self.strafe[1] -= 1
+        elif symbol == key.D:
+            self.strafe[1] += 1
+        elif symbol == key.SPACE:
+            if self.dy == 0:
+                self.dy = JUMP_SPEED
+        elif symbol == key.ESCAPE:
+            self.set_exclusive_mouse(False)
+        elif symbol == key.TAB:
+            self.flying = not self.flying
+        elif symbol in self.num_keys:
+            index = (symbol - self.num_keys[0]) % len(self.inventory)
+            self.block = self.inventory[index]
+    
+    def on_key_release(self, symbol, modifiers):
+        """ Called when the player releases a key. See pyglet docs for key
+        mappings.
+        
+        Parameters
+        ----------
+        symbol : int
+            Number representing the key that was pressed.
+        modifiers : int
+            Number representing any modifiying keys that were pressed.
+        
+        """
+        if symbol == key.W:
+            self.strafe[0] += 1
+        elif symbol == key.S:
+            self.strafe[0] -= 1
+        elif symbol == key.A:
+            self.strafe[1] += 1
+        elif symbol == key.D:
+            self.strafe[1] -= 1
+            
+    def on_resize(self, width, height):
+        """ Called when the window is resized to a new 'width' and 'height'
+        
+        """
+        # label
+        self.label.y = height - 10
+        # reticle
+        if self.reticle:
+            self.reticle.delete()
+        x, y = self.width / 2, self.height / 2
+        n = 10
+        self.reticle = pyglet.graphics.vertex_list(4,
+                                                    ('v2i', (x - n, y, x + n, y, x, y - n, x, y + n))
+                                                )
+        
+    def set_2d(self):
+        """ Configure OpenGL to draw in 2d.
+        
+        """
+        width, height = self.get_size()
+        glDisable(GL_DEPTH_TEST)
+        glViewport(0, 0, width, height)
+        glMatrixMode(GL_PROJECTION)
+        glLocaIdentity()
+        glOrtho(0, width, 0, height, -1, 1)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        
+    def set_3d(self):
+        """ Configure OpenGL to draw in 3d.
+        
+        """
+        width, height = self.get_size()
+        glEnable(GL_DEPTH_TEST)
+        glViewport(0, 0, width, height)
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluPerspective(65.0, width / float(height), 0.1, 60.0)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        x, y = self.rotation
+        glRotatef(x, 0, 1, 0)
+        glRotatef(-y, math.cos(math.radians(x)), 0, math.sin(math.radians(x)))
+        x, y, z = self.position
+        glTranslatef(-x, -y, -z)
+    
+    def on_draw(self):
+        """ Called by pyglet to draw the canvas.
+        
+        """
+        self.clear()
+        self.set_3d()
+        glColor3d(1, 1, 1)
+        self.model.batch.draw()
+        self.draw_focused_block()
+        self.set_2d()
+        self.draw_label()
+        self.draw_reticle()
+        
+    def draw_focused_block(self):
+        """ Draw black edges around the block that is currently under the crosshairs.
+        
+        """
+        vector = self.get_sight_vector()
+        block = self.model.hit_test(self.position, vector)[0]
+        if block:
+            x, y, z = block
+            vertex_data = cub_vertices(x, y, z, 0.51)
+            glColor3d(0, 0, 0)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            pyglet.graphics.draw(24, GL_QUADS, ('v3f/static', vertex_data))
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+            
+    def draw_label(self):
+        """ Draw the label in the top left of the screen.
+        
+        """
+        x, y, z = self.position
+        self.label.text = '%02d (%.2f, %.2f, %.2f) %d / %d' % (
+                        pyglet.clock.get_fps(), x, y, z,
+                        len(self.model._shown), len(self.model.world))
+        self.label.draw()
+        
+    def draw_reticle(self):
+        """ Draw the crosshairs in the center of the screen.
+        
+        """
+        glColor3d(0, 0, 0)
+        self.reticle.draw(GL_LINES)
+
+def setup_fog():
+    """ Configure the OpenGL fog properties.
+    
+    """
+    # Enable fog. Fog "blends a fog color with each rasterized pixel fragment's
+    # post-texturing color."
+    glEnable(GL_FOG)
+    # Set the fog color.
+    glFogfv(GL_FOG_COLOR, (GLfloat * 4)(0.5, 0.69, 1.0, 1))
+    # Say we have no preference between rendering speed and quality.
+    glHint(GL_FOG_HINT, GL_DONT_CARE)
+    # Specify the equation used to compute the blending factor.
+    glFogi(GL_FOG_MODE, GL_LINEAR)
+    # How close and far away fog starts and ends. The closer the start and end,
+    # the denser the fog in the fog range.
+    glFogf(GL_FOG_START, 20.0)
+    glFogf(GL_FOG_END, 60.0)
+   
+def setup():
+    """ Basic OpenGL configuration.
+    """
+    # Set the color of "clear", i.e. the sky, in rgba.
+    glClearColor(0.5, 0.69, 1.0, 1)
+    # Enable culling (not rendering) of back-facing facets -- facets that aren't
+    # visible to you.
+    glEnable(GL_CULL_FACE)
+    # Set the texture minification/magnification function to GL_NEAREST (nearest
+    # in Manhattan distance) to the specified texture coordinates. GL_NEAREST
+    # "is generally faster than GL_LINEAR, but it can produce textured images
+    # with sharper edges because the transition between texture elements is not
+    # as smooth."
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+    setup_fog() 
+    
+
+def main():
+    window = Window(width=800, height=600, caption='Pyglet', resizable=True)
+    # Hide the mouse cursor and prevent the mouse from leaving the window.
+    window.set_exclusive_mouse(True)
+    setup()
+    pyglet.app.run()
+
+            
+if __name__ == '__main__':
+    main()
 
 
 # In[ ]:
